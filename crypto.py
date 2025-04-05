@@ -47,6 +47,8 @@ def store_market_data(price):
             );
             """
             cur.execute(create_table_query)
+            cur.execute("DELETE FROM ohlc_data;")
+            conn.commit()
             price['Timestamp'] = price['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
 
       
@@ -106,15 +108,17 @@ def sma(data, window):
     return data['Close_Price'].rolling(window=window).mean()
 
 
-def rsi(data, window=14):
-    delta = data['Close_Price'].diff(1)
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (delta.where(delta < 0, 0)).rolling(window=window).mean()
-    
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    
-    return rsi
+def rsi(df, window=14):
+    df = df.copy()
+    df['Change'] = df['Close_Price'] - df['Close_Price'].shift(1)
+    df['Gain'] = np.where(df['Change']>=0, df['Change'],0)
+    df['Loss'] = np.where(df['Change']<0, -1*df['Change'],0)
+    df['Avg_Gain'] = df['Gain'].ewm(alpha = 1/window, min_periods=window).mean()
+    df['Avg_Loss'] = df['Loss'].ewm(alpha = 1/window, min_periods=window).mean()
+    df['RS'] = df['Avg_Gain']/df['Avg_Loss']
+    df['RSI'] = 100 - (100/(1+df['RS']))
+    return df['RSI']
+
 
 def macd(df, a=12, b=26, c=9):
     df = df.copy()  
@@ -159,6 +163,9 @@ def update_macd():
         print("MACD & Signal updated successfully!")
 
 def plot_trading_indicators():
+    
+    plt.clf() 
+    plt.close('all')
     df = fetch_close_prices()
     if df is None or df.empty:
         print("No data to plot.")
@@ -167,36 +174,46 @@ def plot_trading_indicators():
     df['SMA_14'] = sma(df, 14)
     df['RSI_14'] = rsi(df, 14)
     macd_values = macd(df)
-    
+
     df['MACD'] = macd_values['macd']
     df['MACD_Signal'] = macd_values['macd_signal']
 
-    
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
 
-   
+    # SMA logic
+    df['Signal'] = np.where(df['Close_Price'] > df['SMA_14'], 'Up',
+                     np.where(df['Close_Price'] < df['SMA_14'], 'Down', ''))
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
+
+    # --- SMA + Close Price ---
     axes[0].plot(df['Timestamp'], df['Close_Price'], label='Close Price', color='blue')
     axes[0].plot(df['Timestamp'], df['SMA_14'], label='SMA 14', linestyle='dashed', color='red')
-    axes[0].set_title("Bitcoin Close Price & SMA")
-    axes[0].legend()
+
+    up_signals = df[df['Signal'] == 'Up']
+    down_signals = df[df['Signal'] == 'Down']
+    axes[0].scatter(up_signals['Timestamp'], up_signals['Close_Price'], marker='^', color='green', label='Uptrend', alpha=0.8)
+    axes[0].scatter(down_signals['Timestamp'], down_signals['Close_Price'], marker='v', color='red', label='Downtrend', alpha=0.8)
+
+    axes[0].set_title("Close Price & SMA with Trends")
+    axes[0].legend(loc = "upper left")
     axes[0].grid()
 
-    
+    # --- RSI ---
     axes[1].plot(df['Timestamp'], df['RSI_14'], label='RSI 14', color='purple')
-    axes[1].axhline(70, linestyle='dashed', color='red')  # Overbought
-    axes[1].axhline(30, linestyle='dashed', color='green')  # Oversold
+    axes[1].axhline(70, linestyle='dashed', color='red')   # Overbought
+    axes[1].axhline(30, linestyle='dashed', color='green') # Oversold
     axes[1].set_title("RSI Indicator")
-    axes[1].legend()
+    axes[1].legend(loc = "upper left")
     axes[1].grid()
 
-    
+    # --- MACD ---
     axes[2].plot(df['Timestamp'], df['MACD'], label='MACD', color='black')
     axes[2].plot(df['Timestamp'], df['MACD_Signal'], label='Signal Line', linestyle='dashed', color='orange')
+    axes[2].bar(df['Timestamp'], df['MACD'] - df['MACD_Signal'],
+                color=['green' if val >= 0 else 'red' for val in df['MACD'] - df['MACD_Signal']], alpha=0.4)
 
-    axes[2].bar(df['Timestamp'], df['MACD'] - df['MACD_Signal'], color=['green' if val >= 0 else 'red' for val in df['MACD'] - df['MACD_Signal']], alpha=0.5)
-    
     axes[2].set_title("MACD Indicator")
-    axes[2].legend()
+    axes[2].legend(loc = "upper left")
     axes[2].grid()
 
     plt.xticks(rotation=45)
@@ -205,8 +222,23 @@ def plot_trading_indicators():
 
 
 
+
 if __name__ == "__main__":
-    data = fetch_market_data("bitcoin","usd",365)
+    crypto = input("Enter the crypto whose data to be fetched: ")
+    cryp = crypto.lower()
+    match crypto:
+        case 'bitcoin' | 'btc':
+            data = fetch_market_data("bitcoin","usd",365)
+
+        case 'ethereum' | 'eth':
+            data = fetch_market_data("ethereum","usd",365)
+
+        case 'binancecoin' | 'bnb':
+             data = fetch_market_data("binancecoin","usd",365)
+
+        case 'tether' | 'usdt':
+             data = fetch_market_data("tether","usd",365)
+    
     print(data.head())
     store_market_data(data)
     update_sma_rsi()
